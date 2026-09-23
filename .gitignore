@@ -229,3 +229,5 @@ approved.txt
 *.session
 *.session-journal
 data/bins.json.gz
+keys.json
+users_access.json
