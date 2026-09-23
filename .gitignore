@@ -216,3 +216,16 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+# ── The Hitter — bot runtime files ──
+admin.json
+premium.txt
+sites.txt
+proxy.txt
+user_proxies.json
+user_pool.json
+error.txt
+charged.txt
+approved.txt
+*.session
+*.session-journal
+data/bins.json.gz
