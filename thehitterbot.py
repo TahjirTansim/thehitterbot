@@ -601,12 +601,15 @@ def extract_cc(text: str) -> list:
         cards.append(f"{card}|{month}|{year}|{cvv}")
     return cards
 
-def calc_workers(proxy_count: int, max_cap: int = 40) -> int:
+def calc_workers(proxy_count: int, max_cap: int = 40, is_admin_user: bool = False) -> int:
     """Calculate safe worker count from user's proxy count.
-    Rule: 1 proxy = 2 workers, capped at max_cap.
+    - Regular users: 1 proxy = 2 workers, capped at 40
+    - Admins:        1 proxy = 5 workers, capped at 200
     """
     if proxy_count <= 0:
         return 0
+    if is_admin_user:
+        return min(200, proxy_count * 5)
     return min(max_cap, proxy_count * 2)
 
 def make_progress_bar(current, total, width=20) -> str:
@@ -1851,10 +1854,10 @@ async def run_mass_check(user_id, cards, progress_msg_id):
     }
     proxy_pool = list(get_proxies_for_user(user_id) or load_proxies())
     # Auto-scale workers based on user's proxy count (1 proxy = 2 workers, max 40)
-    user_workers = calc_workers(len(proxy_pool), max_cap=40)
+    user_workers = calc_workers(len(proxy_pool), max_cap=40, is_admin_user=is_admin(user_id))
     if user_workers <= 0:
         user_workers = MASS_WORKERS
-    print(f"[MASS] user={user_id} proxies={len(proxy_pool)} workers={user_workers} cards={len(cards)}")
+    print(f"[MASS] user={user_id} admin={is_admin(user_id)} proxies={len(proxy_pool)} workers={user_workers} cards={len(cards)}")
     random.shuffle(proxy_pool)
     proxy_iter = itertools.cycle(proxy_pool) if proxy_pool else None
     proxy_lock = asyncio.Lock()
@@ -2021,7 +2024,8 @@ async def start(event):
 
 @bot.on(events.NewMessage(pattern=r'^/sh\s+'))
 async def single_check(event):
-    uid = event.sender_id
+    uid     = event.sender_id
+    chat_id = event.chat_id
     if not is_premium(uid):
         await event.reply(pe(
             f"❌ <b>Access Denied</b>\n"
@@ -2069,8 +2073,8 @@ async def single_check(event):
         cname          = name if username else str(uid)
         result['time'] = round(time.time() - t0, 2)
         resp = build_result_card(result, bin_info, uid, cname)
-        await raw_edit(uid, smsg.id, resp, [])
-        if result.get('status') == 'Charged':
+        await raw_edit(chat_id, smsg.id, resp, [])
+        if result.get('status') == 'Charged' and chat_id == uid:
             await asyncio.to_thread(_pin_message_botapi, uid, smsg.id)
         if _should_post_to_gc(result):
             await _post_gc_log(result, cname)
@@ -2142,8 +2146,8 @@ async def adyen_direct_check(event):
         cname          = name if username else str(uid)
         result['time'] = round(time.time() - t0, 2)
         resp = build_result_card(result, bin_info, uid, cname)
-        await raw_edit(uid, smsg.id, resp, [])
-        if result.get('status') == 'Charged':
+        await raw_edit(chat_id, smsg.id, resp, [])
+        if result.get('status') == 'Charged' and chat_id == uid:
             await asyncio.to_thread(_pin_message_botapi, uid, smsg.id)
         if _should_post_to_gc(result):
             await _post_gc_log(result, cname)
