@@ -798,6 +798,23 @@ def _parse_amount(price_str):
     except ValueError:
         return None
 
+def _is_out_of_stock(result: dict):
+    """Check if a result indicates the store's product is unavailable."""
+    msg = (result.get('message', '') or '').lower()
+    oos_signals = (
+        'out of stock', 'sold out', 'out-of-stock',
+        'unavailable', 'no longer available',
+        'product not found', 'product unavailable',
+        'cart is empty', 'no products',
+        'nothing to buy', 'invalid variant',
+        'not currently available',
+    )
+    for sig in oos_signals:
+        if sig in msg:
+            return True, 'OOS: ' + sig
+    return False, ''
+
+
 def _store_over_cap(result):
     amt = _parse_amount(result.get('price'))
     if amt is None:
@@ -1056,7 +1073,7 @@ async def check_card_with_retry(card, sites, proxies, max_retries=2, start_proxy
         return _make_result(card, 'Dead', 'No proxy configured')
 
     last_err     = 'Unknown error'
-    MAX_TRIES    = 30
+    MAX_TRIES    = 60
     failed_sites = set()
 
     for attempt in range(MAX_TRIES):
@@ -1091,6 +1108,15 @@ async def check_card_with_retry(card, sites, proxies, max_retries=2, start_proxy
             await asyncio.sleep(0.05)
             continue
 
+        # Out-of-stock detection — prune sites with unavailable products
+        oos, oos_reason = _is_out_of_stock(result)
+        if oos:
+            _prune_site(shop_url)
+            failed_sites.add(shop_url)
+            last_err = oos_reason
+            await asyncio.sleep(0.05)
+            continue
+
         if result['status'] == 'Dead' and not result.get('retry'):
             return result
 
@@ -1107,6 +1133,16 @@ async def check_card_with_retry(card, sites, proxies, max_retries=2, start_proxy
             await asyncio.sleep(0.15)
 
     _log_error_card(card, last_err)
+
+    # Friendly messages for common exhaustion cases
+    low = (last_err or '').lower()
+    if 'oos:' in low or 'out of stock' in low or 'sold out' in low:
+        friendly = 'All sites out of stock \u2014 try again later'
+        return _make_result(card, 'Dead', friendly, retryable=True)
+    if 'store $' in low and 'cap' in low:
+        friendly = 'All sites over the $10 cap \u2014 pool needs refresh'
+        return _make_result(card, 'Dead', friendly, retryable=True)
+
     return _make_result(card, 'Dead', last_err)
 
 def clear_error_log():
