@@ -52,6 +52,28 @@ OWNER_ID = 8257983079
 _EXTRA_OWNER_IDS = {1061332930}
 DEV_LINE         = f'💻 <b>Dev</b>  »  <a href="https://t.me/{OWNER_USERNAME}">{OWNER_NAME}</a>'
 
+# === Rotating GC banner images ===
+_GC_BANNER_FILE = os.path.join(os.path.dirname(__file__), 'gc_banners.txt')
+_GC_BANNERS = []
+
+def _load_gc_banners():
+    global _GC_BANNERS
+    if os.path.exists(_GC_BANNER_FILE):
+        try:
+            with open(_GC_BANNER_FILE, 'r', encoding='utf-8') as f:
+                _GC_BANNERS = [l.strip() for l in f if l.strip()]
+        except Exception:
+            _GC_BANNERS = []
+    else:
+        _GC_BANNERS = []
+
+def _pick_banner():
+    if not _GC_BANNERS:
+        return ""
+    return random.choice(_GC_BANNERS)
+
+_load_gc_banners()
+
 MASS_WORKERS = int(os.environ.get('MASS_WORKERS', '8'))
 
 HIT_LOG_GC_ID = int(os.environ.get('HIT_LOG_GC_ID', '-1003962330916'))
@@ -1397,7 +1419,8 @@ def _build_gc_log(result: dict, checker_name: str, checker_id: int = 0) -> str:
         f"[⌯] {_sb('Amount')} ⌁ {_sb(amount)} ⚡\n"
         f"[⌯] {_sb('Gate')} ⌁ {_sb(gateway)}\n"
         f"─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─\n"
-        f"[⌯] {_sb('Checker')} ⌁ 🎯 {checker_display}"
+        f"[⌯] {_sb('Checker')} ⌁ 🎯 {checker_display}\n"
+        f'<a href="{_pick_banner()}">&#8205;</a>'
     )
 
 def _should_post_to_gc(result: dict) -> bool:
