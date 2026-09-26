@@ -799,8 +799,10 @@ def _parse_amount(price_str):
         return None
 
 def _is_out_of_stock(result: dict):
-    """Check if a result indicates the store's product is unavailable."""
+    """Check if a result indicates the store can't be used for checking."""
     msg = (result.get('message', '') or '').lower()
+
+    # Product availability issues
     oos_signals = (
         'out of stock', 'sold out', 'out-of-stock',
         'unavailable', 'no longer available',
@@ -812,6 +814,44 @@ def _is_out_of_stock(result: dict):
     for sig in oos_signals:
         if sig in msg:
             return True, 'OOS: ' + sig
+
+    # Store-level blocks (checkout blocked, shipping, terms, brand restrictions)
+    blocked_signals = (
+        'validation_custom',
+        'shipping protection',
+        'checkout is not allowed',
+        'payment_flexibility_terms_id_mismatch',
+        'terms_id_mismatch',
+        'payment_flexibility',
+        "couldn't ship a product",
+        'could not ship a product',
+        'cannot ship',
+        'no shipping',
+        'not available for shipping',
+        'shipping not available',
+        'your order cannot be',
+        'order cannot be processed',
+        'region_blocked',
+        'not available in your region',
+        'country not supported',
+        'we are sorry',
+        'sorry, we cannot',
+        'sorry your order',
+        # New: card brand rejection
+        'card brand not supported',
+        'credit card brand not supported',
+        'brand not supported',
+        'unsupported card',
+        'card type not accepted',
+        'card type not supported',
+        'we do not accept',
+        'we do not support',
+        'not accept this card',
+    )
+    for sig in blocked_signals:
+        if sig in msg:
+            return True, 'BLOCKED: ' + sig[:40]
+
     return False, ''
 
 
