@@ -699,11 +699,6 @@ def build_result_card(result: dict, bin_info: tuple, uid: int, cname: str) -> st
         if result['status'] == 'Charged' and receipt_url else ""
     )
     bin_parts = " · ".join(p for p in [brand, btype, level] if p and p != '-')
-    if checker_id:
-        checker_display = f'<a href="tg://user?id={checker_id}">{checker_name}</a>'
-    else:
-        checker_display = checker_name
-
     return pe(
         f"<b>{header}</b>\n"
         f"<b>{SEP}</b>\n"
@@ -1271,6 +1266,11 @@ def _build_gc_log(result: dict, checker_name: str, checker_id: int = 0) -> str:
     pretty_msg = _clean_response(msg)
     if 'insufficient' in low:
         pretty_msg = 'Insufficient Funds — Card Live'
+
+    if checker_id:
+        checker_display = f'<a href="tg://user?id={checker_id}">{checker_name}</a>'
+    else:
+        checker_display = checker_name
 
     return pe(
         f"[⌯] {_sb(header)} ⌁ ⚡\n"
