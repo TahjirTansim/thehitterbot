@@ -604,12 +604,12 @@ def extract_cc(text: str) -> list:
 def calc_workers(proxy_count: int, max_cap: int = 40, is_admin_user: bool = False) -> int:
     """Calculate safe worker count from user's proxy count.
     - Regular users: 1 proxy = 2 workers, capped at 40
-    - Admins:        1 proxy = 5 workers, capped at 200
+    - Admins:        1 proxy = 3 workers, capped at 60
     """
     if proxy_count <= 0:
         return 0
     if is_admin_user:
-        return min(200, proxy_count * 5)
+        return min(60, proxy_count * 3)
     return min(max_cap, proxy_count * 2)
 
 def make_progress_bar(current, total, width=20) -> str:
