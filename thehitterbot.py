@@ -73,7 +73,7 @@ ADYEN_3DS_WORKER = os.environ.get('ADYEN_3DS_WORKER', '').strip()
 NOPECHA_API_KEY = os.environ.get('NOPECHA_API_KEY', '').strip()
 
 # Gateways whose hits are dropped (retry rotates to another merchant)
-_GATEWAY_BLOCKLIST = {"authorize.net"}
+_GATEWAY_BLOCKLIST = {"authorize.net", "worldpay credit card payments", "worldpay"}
 
 _ADMIN_FILE = os.path.join(os.path.dirname(__file__), 'admin.json')
 _DEFAULT_ADMINS = (
@@ -624,6 +624,43 @@ load_user_pool()
 _load_user_sites()
 _load_users_access()
 
+# Banned users
+_BANNED_FILE = os.path.join(os.path.dirname(__file__), 'banned.json')
+_banned: set = set()
+
+def _load_banned():
+    global _banned
+    if os.path.exists(_BANNED_FILE):
+        try:
+            with open(_BANNED_FILE) as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    _banned = set(data)
+                elif isinstance(data, dict):
+                    _banned = set(data.get('banned', []))
+        except Exception:
+            _banned = set()
+
+def _save_banned():
+    try:
+        with open(_BANNED_FILE, 'w') as f:
+            json.dump(sorted(_banned), f)
+    except Exception:
+        pass
+
+def is_banned(uid: int) -> bool:
+    return uid in _banned
+
+def ban_user(uid: int):
+    _banned.add(uid)
+    _save_banned()
+
+def unban_user(uid: int):
+    _banned.discard(uid)
+    _save_banned()
+
+_load_banned()
+
 
 # ════════════════════════════════════════════════════════════
 #  CARDS
@@ -1067,8 +1104,13 @@ async def _call_checker_api(shop_url: str, card: str, proxy_raw: str) -> dict:
         if result.get('retry'):
             last_result = result
             last_err = result.get('message', 'Retryable')
-            if 'CAPTCHA' in (result.get('message') or '').upper():
+            msg_upper = (result.get('message') or '').upper()
+            if 'CAPTCHA' in msg_upper or 'BLOCKED GATEWAY' in msg_upper:
                 mark_site_dead(shop_url)
+                try:
+                    _prune_site(shop_url)
+                except Exception:
+                    pass
             continue
         return result
     if last_result is not None:
@@ -2107,6 +2149,9 @@ async def start(event):
 async def single_check(event):
     uid     = event.sender_id
     chat_id = event.chat_id
+    if is_banned(uid):
+        await event.reply(pe(f"\U0001F6AB <b>You are banned.</b>"), parse_mode='html')
+        return
     if not is_premium(uid):
         await event.reply(pe(
             f"❌ <b>Access Denied</b>\n"
@@ -2915,6 +2960,9 @@ def _is_txt_file(e):
 @bot.on(events.NewMessage(func=_is_txt_file))
 async def txt_detected(event):
     uid = event.sender_id
+    if is_banned(uid):
+        await event.reply(pe(f"\U0001F6AB <b>You are banned.</b>"), parse_mode='html')
+        return
     if not is_premium(uid):
         await event.reply(pe(f"❌ <b>Access Denied</b>"), parse_mode='html')
         return
@@ -2969,6 +3017,9 @@ async def txt_detected(event):
 @bot.on(events.NewMessage(pattern=r'^/msh$'))
 async def mass_check_cmd(event):
     uid = event.sender_id
+    if is_banned(uid):
+        await event.reply(pe(f"\U0001F6AB <b>You are banned.</b>"), parse_mode='html')
+        return
     if not is_premium(uid):
         await event.reply(pe(f"❌ <b>Access Denied</b>"), parse_mode='html')
         return
@@ -3320,6 +3371,81 @@ async def add_site_command(event):
     global _SITES_CACHE
     _SITES_CACHE.append(new_site)
     await event.reply(pe(f"✅ <b>Site Added</b>\n<b>{SEP}</b>\n<code>{new_site}</code>\n📋 Total: {len(_SITES_CACHE)}"), parse_mode='html')
+
+@bot.on(events.NewMessage(pattern=r'^/ban(\\s+\\d+)?$'))
+async def ban_command(event):
+    if not is_admin(event.sender_id):
+        await event.reply(pe(f"Admin only."), parse_mode='html')
+        return
+    target = None
+    if event.pattern_match.group(1):
+        target = int(event.pattern_match.group(1).strip())
+    elif event.reply_to_msg_id:
+        try:
+            replied = await event.get_reply_message()
+            if replied and replied.sender_id:
+                target = replied.sender_id
+        except Exception:
+            pass
+    if not target:
+        await event.reply(pe(f"Usage: /ban ID or reply to a message with /ban"), parse_mode='html')
+        return
+    if target == OWNER_ID or target in _DEFAULT_ADMINS:
+        await event.reply(pe(f"Cannot ban an admin."), parse_mode='html')
+        return
+    if is_banned(target):
+        await event.reply(pe(f"Already banned: <code>" + str(target) + "</code>"), parse_mode='html')
+        return
+    ban_user(target)
+    try:
+        name, uname = await get_user_info(target)
+        display = "@" + uname if uname else name
+    except Exception:
+        display = str(target)
+    await event.reply(pe(
+        f"\U0001F6AB <b>User Banned</b>\n"
+        f"<b>{SEP}</b>\n"
+        f"\U0001F464 <b>User</b>    \u00bb  <a href=\"tg://user?id=" + str(target) + "\">" + str(display) + "</a>\n"
+        f"\U0001F194 <b>ID</b>      \u00bb  <code>" + str(target) + "</code>\n"
+        f"<b>{SEP}</b>\n"
+        f"{DEV_LINE}"
+    ), parse_mode='html')
+
+@bot.on(events.NewMessage(pattern=r'^/unban(\\s+\\d+)?$'))
+async def unban_command(event):
+    if not is_admin(event.sender_id):
+        await event.reply(pe(f"Admin only."), parse_mode='html')
+        return
+    target = None
+    if event.pattern_match.group(1):
+        target = int(event.pattern_match.group(1).strip())
+    elif event.reply_to_msg_id:
+        try:
+            replied = await event.get_reply_message()
+            if replied and replied.sender_id:
+                target = replied.sender_id
+        except Exception:
+            pass
+    if not target:
+        await event.reply(pe(f"Usage: /unban ID or reply to a message with /unban"), parse_mode='html')
+        return
+    if not is_banned(target):
+        await event.reply(pe(f"Not banned: <code>" + str(target) + "</code>"), parse_mode='html')
+        return
+    unban_user(target)
+    try:
+        name, uname = await get_user_info(target)
+        display = "@" + uname if uname else name
+    except Exception:
+        display = str(target)
+    await event.reply(pe(
+        f"\u2705 <b>User Unbanned</b>\n"
+        f"<b>{SEP}</b>\n"
+        f"\U0001F464 <b>User</b>    \u00bb  <a href=\"tg://user?id=" + str(target) + "\">" + str(display) + "</a>\n"
+        f"\U0001F194 <b>ID</b>      \u00bb  <code>" + str(target) + "</code>\n"
+        f"<b>{SEP}</b>\n"
+        f"{DEV_LINE}"
+    ), parse_mode='html')
 
 @bot.on(events.NewMessage(pattern=r'^/broadcast\s+'))
 async def broadcast_command(event):
