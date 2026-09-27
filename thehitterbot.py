@@ -70,7 +70,12 @@ def _load_gc_banners():
 def _pick_banner():
     if not _GC_BANNERS:
         return ""
-    return random.choice(_GC_BANNERS)
+    raw = random.choice(_GC_BANNERS)
+    # Wrap the URL through wsrv.nl so Telegram previews it reliably
+    # (resized to 200x200, JPEG, ~30 KB — small enough for inline preview)
+    from urllib.parse import quote as _q
+    encoded = _q(raw, safe='')
+    return f"https://wsrv.nl/?w=200&h=200&fit=cover&output=jpg&q=88&url={encoded}"
 
 _load_gc_banners()
 
